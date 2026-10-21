@@ -161,3 +161,78 @@ def test_nerdd_liabilities_are_minimized_by_default():
 
 def test_np_likeness_is_maximized_by_default():
     assert get_property_catalog().get("np_likeness").default_mode == "MAX"
+
+
+# ------------------------------------------------- end-to-end through the nodes
+
+
+def test_characterization_nodes_merge_rdkit_and_nerdd_results(monkeypatch):
+    """The workflow nodes must run both tools and merge them per molecule.
+
+    Exercises the real decide/characterize nodes with a live RDKit and a faked NERDD
+    service, which is the layer the tool-level tests do not cover.
+    """
+
+    pytest.importorskip("rdkit")
+    pytest.importorskip("boltz_api")
+
+    from nodes.characterize_molecules import characterize_molecules_node
+    from nodes.decide_characterization import decide_characterization_node
+    from schemas.state import OptimizationMode, TargetProperty, WorkflowState
+    from tools import nerdd_tool
+
+    aspirin = "CC(=O)OC1=CC=CC=C1C(=O)O"
+    caffeine = "CN1C=NC2=C1C(=O)N(C)C(=O)N2C"
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_request(method, url, **kwargs):
+        if url.endswith("/jobs"):
+            return Response({"id": "job-1", "status": "created"})
+        if url.endswith("/results"):
+            return Response(
+                {
+                    "data": [
+                        {"mol_id": 0, "prediction_1": 0.27, "prediction_5": 0.81},
+                        {"mol_id": 1, "prediction_1": 0.05, "prediction_5": 0.12},
+                    ],
+                    "pagination": {"next_url": None},
+                }
+            )
+        return Response({"id": "job-1", "status": "completed", "num_pages_total": 1})
+
+    monkeypatch.setattr(nerdd_tool.requests, "request", fake_request)
+    monkeypatch.setattr(nerdd_tool.time, "sleep", lambda *_: None)
+
+    state = WorkflowState(workflow_id="nerdd-e2e", user_prompt="QED and CYP3A4 inhibition")
+    state.starting_molecules = [aspirin]
+    state.search_space = {"m1": aspirin, "m2": caffeine}
+    state.current_bo_recommendations = ["m1", "m2"]
+    state.targets = [
+        TargetProperty(name="qed", mode=OptimizationMode.MAXIMIZE, bounds=(0.0, 1.0), weight=0.5),
+        TargetProperty(
+            name="cyp3a4_inhibition", mode=OptimizationMode.MINIMIZE, bounds=(0.0, 1.0), weight=0.5
+        ),
+    ]
+
+    decide_characterization_node(state)
+    assert state.characterization_config["tool_ids"] == ["rdkit", "nerdd_cyplebrity"]
+
+    characterize_molecules_node(state)
+
+    by_id = {result.molecule_id: result.properties for result in state.experimental_results}
+    assert {"m1", "m2"} <= set(by_id)
+    for molecule_id in ("m1", "m2"):
+        # One result per molecule carrying a locally computed and a NERDD property.
+        assert 0.0 <= by_id[molecule_id]["qed"] <= 1.0
+        assert "cyp3a4_inhibition" in by_id[molecule_id]
+    assert by_id["m1"]["cyp3a4_inhibition"] == 0.81
+    assert by_id["m2"]["cyp3a4_inhibition"] == 0.12
