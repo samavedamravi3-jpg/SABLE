@@ -255,6 +255,12 @@ class NerddModuleSpec:
     properties: Tuple[str, ...]
     default_params: Dict[str, Any] = field(default_factory=dict)
     batch_size: int = 50
+    # NERDD's own module id when it differs from ``module`` (e.g. "np-scout").
+    api_id: Optional[str] = None
+
+    @property
+    def endpoint(self) -> str:
+        return self.api_id or self.module
 
 
 NERDD_MODULES: Dict[str, NerddModuleSpec] = {
@@ -308,7 +314,10 @@ NERDD_MODULES: Dict[str, NerddModuleSpec] = {
         level="molecule",
         extractor=_extract_np_scout,
         properties=("np_likeness",),
+        # NERDD rejects jobs that leave its boolean parameters unset.
+        default_params={"contour_lines": False, "quality": "low"},
         batch_size=50,
+        api_id="np-scout",
     ),
     "skin_doctor_cp": NerddModuleSpec(
         module="skin_doctor_cp",
@@ -320,6 +329,7 @@ NERDD_MODULES: Dict[str, NerddModuleSpec] = {
             "skin_nonsensitization_probability",
         ),
         batch_size=25,
+        api_id="skin-doctor-cp",
     ),
     "fame3r": NerddModuleSpec(
         module="fame3r",
@@ -327,7 +337,7 @@ NERDD_MODULES: Dict[str, NerddModuleSpec] = {
         level="atom",
         extractor=_extract_fame3r,
         properties=("som_max_probability", "som_mean_probability", "som_count"),
-        default_params={"metabolism_subset": "all"},
+        default_params={"metabolism_subset": "all", "fame_score": False, "shannon_entropy": False},
         batch_size=10,
     ),
     "awesom": NerddModuleSpec(
@@ -412,7 +422,7 @@ class NerddTool(BaseTool):
     def _module_url(self, *parts: str) -> str:
         base = self.base_url.rstrip("/")
         suffix = "/".join(str(part).strip("/") for part in parts if str(part))
-        return f"{base}/{self.spec.module}/jobs" + (f"/{suffix}" if suffix else "")
+        return f"{base}/{self.spec.endpoint}/jobs" + (f"/{suffix}" if suffix else "")
 
     def _request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         """Issue a request, retrying transient failures and NERDD's 429 backpressure."""

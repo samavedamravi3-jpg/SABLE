@@ -373,6 +373,37 @@ def test_module_parameters_are_sent_with_the_job(monkeypatch, no_sleep):
     assert create["data"]["inputs"] == [ASPIRIN]
 
 
+@pytest.mark.parametrize(
+    "module, endpoint",
+    [("np_scout", "np-scout"), ("skin_doctor_cp", "skin-doctor-cp"), ("cypstrate", "cypstrate")],
+)
+def test_jobs_are_sent_to_the_nerdd_module_id(monkeypatch, no_sleep, module, endpoint):
+    monkeypatch.delenv("NERDD_BASE_URL", raising=False)
+    fake = install(monkeypatch, FakeNerdd([{"mol_id": 0}]))
+
+    NerddTool(module=module).predict({"m1": ASPIRIN})
+
+    create = next(call for call in fake.calls if call["url"].endswith("/jobs"))
+    assert create["url"] == f"{nerdd_tool.DEFAULT_BASE_URL}/{endpoint}/jobs"
+
+
+@pytest.mark.parametrize(
+    "module, required",
+    [
+        ("np_scout", {"contour_lines": False}),
+        ("fame3r", {"fame_score": False, "shannon_entropy": False}),
+    ],
+)
+def test_required_boolean_parameters_are_always_sent(monkeypatch, no_sleep, module, required):
+    fake = install(monkeypatch, FakeNerdd([{"mol_id": 0}]))
+
+    NerddTool(module=module).predict({"m1": ASPIRIN})
+
+    create = next(call for call in fake.calls if call["url"].endswith("/jobs"))
+    for name, value in required.items():
+        assert create["data"][name] is value
+
+
 def test_characterize_accepts_a_characterization_request(monkeypatch, no_sleep):
     install(monkeypatch, FakeNerdd([{"mol_id": 0, "probability": 0.42}]))
 
